@@ -10,7 +10,7 @@
 
 use anyhow::{Context, Result};
 use arti_client::config::CfgPath;
-use arti_client::{DataStream, TorClient, TorClientConfig};
+use arti_client::{DataStream, IntoTorAddr, TorClient, TorClientConfig};
 use tor_rtcompat::Runtime;
 
 use crate::config::TorConfig;
@@ -36,14 +36,15 @@ impl<R: Runtime> TorManager<R> {
         Ok(Self { client })
     }
 
-    /// Open an anonymised stream to `target` (`"host:port"`). The
-    /// hostname is resolved by the Tor exit, never locally — resolving
-    /// here would leak the lookup.
-    pub async fn connect(&self, target: &str) -> Result<DataStream> {
+    /// Open an anonymised stream to `target`. Accepts anything arti
+    /// treats as an address — notably `(&str, u16)`, where the host
+    /// may be a domain that the Tor *exit* resolves. Resolving the
+    /// name locally would leak the lookup, so we never do.
+    pub async fn connect<A: IntoTorAddr>(&self, target: A) -> Result<DataStream> {
         self.client
             .connect(target)
             .await
-            .with_context(|| format!("opening anonymised stream to {target}"))
+            .context("opening anonymised Tor stream")
     }
 }
 

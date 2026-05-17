@@ -5,3 +5,5 @@
 //! layer with no kernel sockets in the path.
 
 pub mod server;
+
+pub use server::SocksServer;

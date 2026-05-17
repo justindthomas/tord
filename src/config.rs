@@ -17,23 +17,18 @@ pub const DEFAULT_BOOTSTRAP_TIMEOUT_SECS: u64 = 120;
 /// Circuit-isolation policy. The SOCKS username (RFC 1929) is mapped
 /// to an arti `StreamIsolation` token per this setting — see
 /// DESIGN.md §8.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Isolation {
     /// All proxied streams share circuits.
     Shared,
     /// One circuit set per distinct SOCKS username (e.g. per upstream
     /// resolver). The default.
+    #[default]
     PerUpstream,
     /// A fresh circuit per CONNECT — maximum unlinkability, highest
     /// latency.
     PerQuery,
-}
-
-impl Default for Isolation {
-    fn default() -> Self {
-        Isolation::PerUpstream
-    }
 }
 
 /// The `tor:` block.

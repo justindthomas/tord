@@ -2,15 +2,17 @@
 //!
 //! Responsibilities (see DESIGN.md §7, §12):
 //!   1. Load the `tor:` section of router.yaml.
-//!   2. Build a *current-thread* tokio runtime — VCL sessions are
-//!      thread-owned, so arti + the SOCKS listener must run on the
-//!      thread that registers VCL worker-0. Hence no `#[tokio::main]`.
+//!   2. Build a *current-thread* tokio runtime inside a `LocalSet` —
+//!      VCL sessions are thread-owned, so arti, the SOCKS listener
+//!      and every connection handler must run on the one thread that
+//!      registers VCL worker-0. Hence no `#[tokio::main]`, and
+//!      per-connection tasks use `spawn_local`.
 //!   3. Bootstrap the Tor client.
-//!   4. (phase 4) Bind the SOCKS5 server.
-//!   5. (phase 5) Serve the control socket.
-//!   Handle SIGTERM (clean shutdown); SIGHUP reload is phase 5.
+//!   4. Serve the SOCKS5 server until SIGTERM.
+//!   5. (phase 5) Serve the control socket; SIGHUP reload.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -52,8 +54,8 @@ fn main() -> Result<()> {
     tracing::info!(?cfg, "tord starting");
 
     // VCL worker-0 is registered against *this* thread; the
-    // current-thread runtime then runs every task (arti included) on
-    // it. See DESIGN.md §7.
+    // current-thread runtime + LocalSet then run every task on it.
+    // See DESIGN.md §7.
     #[cfg(feature = "vcl")]
     let _vcl_app = vcl_rs::VclApp::init("tord").context("initialising VCL")?;
 
@@ -61,32 +63,45 @@ fn main() -> Result<()> {
         .enable_all()
         .build()
         .context("building current-thread tokio runtime")?;
+    let local = tokio::task::LocalSet::new();
 
-    rt.block_on(run(cfg, args.control_socket))
+    local.block_on(&rt, run(cfg, args.control_socket))
 }
 
 async fn run(cfg: tord::config::TorConfig, control_socket: PathBuf) -> Result<()> {
     #[cfg(feature = "vcl")]
-    let runtime = {
-        let reactor = vcl_rs::VclReactor::new().context("creating VCL reactor")?;
-        tord::runtime::build_runtime(reactor)?
-    };
+    let reactor = vcl_rs::VclReactor::new().context("creating VCL reactor")?;
+
+    #[cfg(feature = "vcl")]
+    let runtime = tord::runtime::build_runtime(reactor.clone())?;
     #[cfg(feature = "kernel-sockets")]
     let runtime = tord::runtime::build_runtime()?;
 
     tracing::info!(state_dir = %cfg.state_dir.display(), "bootstrapping Tor client");
-    let tor = tord::tor::TorManager::bootstrap(runtime, &cfg)
-        .await
-        .context("Tor bootstrap")?;
+    let tor = Arc::new(
+        tord::tor::TorManager::bootstrap(runtime, &cfg)
+            .await
+            .context("Tor bootstrap")?,
+    );
     tracing::info!("Tor client bootstrapped");
 
-    // TODO(phase 4): SOCKS5 server bound on cfg.socks_listen, wired to
-    //                `tor`. TODO(phase 5): control socket; SIGHUP.
-    let _ = (&tor, &control_socket);
+    let server = Arc::new(tord::socks::SocksServer::new(cfg.isolation, tor));
 
-    // Stay up until SIGTERM so bootstrap can be observed end-to-end.
+    // TODO(phase 5): control socket at `control_socket`; SIGHUP reload.
+    let _ = &control_socket;
+
+    #[cfg(feature = "vcl")]
+    let socks = server.serve(cfg.socks_listen, reactor);
+    #[cfg(feature = "kernel-sockets")]
+    let socks = server.serve(cfg.socks_listen);
+
     let mut sigterm = signal(SignalKind::terminate()).context("installing SIGTERM handler")?;
-    sigterm.recv().await;
-    tracing::info!("SIGTERM received — shutting down");
+    tokio::select! {
+        _ = sigterm.recv() => tracing::info!("SIGTERM received — shutting down"),
+        r = socks => match r {
+            Ok(()) => tracing::warn!("SOCKS server exited unexpectedly"),
+            Err(e) => tracing::error!(error = %e, "SOCKS server failed"),
+        },
+    }
     Ok(())
 }

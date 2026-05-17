@@ -80,6 +80,13 @@ impl TordNetProvider {
     }
 }
 
+#[cfg(feature = "kernel-sockets")]
+impl Default for TordNetProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl NetStreamProvider<SocketAddr> for TordNetProvider {
     type Stream = TordStream;
