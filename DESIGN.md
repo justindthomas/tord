@@ -246,10 +246,16 @@ imp-tord` + `imp-tord-query`; an impd-supervised child gated on the
    bootstrap-not-ready behaviour, exit-policy/DoH fallback, soak test.
 
 **Verification status:** phases 1–5 are `cargo check` + `clippy` +
-`test` green on the `kernel-sockets` backend (macOS dev host). Every
-`vcl`-feature API call is verified against `vcl-rs` source, but a
-`vcl`-feature build against `libvppcom` (build host, Bookworm
-container) has not yet been run — that is the first step of phase 6.
+`test` green on the `kernel-sockets` backend (macOS dev host). The
+`vcl`-feature build is verified too: a full `cargo build` in a Debian
+Bookworm container links against VPP 25.10 `libvppcom` — every
+vcl-gated path (`VclNetProvider`, `connect_async`, `VclListener`)
+compiles and links, with SQLite bundled static so the binary's only
+non-libc dynamic dependency is `libvppcom.so`. Remaining phase-6 work
+is IMP integration: a GitHub repo, `fetch-external-daemons.sh` /
+`build-impd.sh` / `external-daemon-versions.txt`, the systemd unit +
+impd supervisor entry, and the dnsd-side SOCKS client + `via: tor`
+forwarder option.
 
 ## 13. Open questions
 

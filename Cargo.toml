@@ -15,6 +15,14 @@ authors = ["Justin Thomas"]
 arti-client = { version = "0.42", default-features = false, features = ["tokio", "rustls"] }
 tor-rtcompat = { version = "0.42", default-features = false, features = ["tokio", "rustls"] }
 
+# arti's on-disk state store (tor-persist) pulls in rusqlite ->
+# libsqlite3-sys, which by default link-searches for a *system*
+# libsqlite3 (present on macOS, absent in a Bookworm build container).
+# Depend on it directly with `bundled` so SQLite is compiled into the
+# binary via cargo's feature unification — nothing extra to apt-install
+# at build time, no libsqlite3 shared object to ship on the appliance.
+libsqlite3-sys = { version = "0.37", features = ["bundled"] }
+
 # VCL transport — SOCKS listener + arti egress through VPP's session
 # layer. Optional: `--no-default-features --features kernel-sockets`
 # drops the libvppcom link for dev builds on non-VPP hosts (macOS).
