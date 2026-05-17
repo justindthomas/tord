@@ -2,7 +2,7 @@
 name = "tord"
 version = "0.1.0"
 edition = "2021"
-description = "VPP-native anonymising SOCKS5 proxy (Tor egress) for imp"
+description = "VPP-native anonymising SOCKS5 proxy with Tor egress"
 license = "AGPL-3.0-or-later"
 authors = ["Justin Thomas"]
 
@@ -20,7 +20,7 @@ tor-rtcompat = { version = "0.42", default-features = false, features = ["tokio"
 # libsqlite3 (present on macOS, absent in a Bookworm build container).
 # Depend on it directly with `bundled` so SQLite is compiled into the
 # binary via cargo's feature unification — nothing extra to apt-install
-# at build time, no libsqlite3 shared object to ship on the appliance.
+# at build time, no libsqlite3 shared object to ship.
 libsqlite3-sys = { version = "0.37", features = ["bundled"] }
 
 # VCL transport — SOCKS listener + arti egress through VPP's session
@@ -71,8 +71,7 @@ path = "src/main.rs"
 name = "tord-query"
 path = "src/bin/tord-query.rs"
 
-# Local development override — mirrors the dnsd / bgpd / dhcpd pattern.
-# When ../vcl-rs exists alongside the tord checkout, prefer the local
-# copy.
+# Local development override: when ../vcl-rs exists alongside the tord
+# checkout, prefer the local copy over the git dependency.
 [patch."https://github.com/justindthomas/vcl-rs"]
 vcl-rs = { path = "../vcl-rs" }

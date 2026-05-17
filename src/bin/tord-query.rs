@@ -1,9 +1,8 @@
 //! tord-query — CLI for the `/run/tord.sock` control socket.
 //!
-//! Mirrors `dnsd-query`. Installed on the appliance as
-//! `imp-tord-query`. Usage: `tord-query [command]` (default
-//! `status`); commands: `status`, `stats`, `reload`, `ping`. The
-//! socket path can be overridden with `TORD_SOCKET`.
+//! Usage: `tord-query [command]` (default `status`); commands:
+//! `status`, `stats`, `reload`, `ping`. The socket path can be
+//! overridden with the `TORD_SOCKET` environment variable.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;

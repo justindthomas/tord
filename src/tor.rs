@@ -50,10 +50,10 @@ impl<R: Runtime> TorManager<R> {
 
 /// Translate the `tor:` config block into an arti `TorClientConfig`.
 ///
-/// The state and cache directories live under `cfg.state_dir`
-/// (`/persistent/data/tord`) so guard selection and the consensus
-/// cache persist across reboots and image upgrades — re-picking
-/// guards every boot is a privacy regression (DESIGN.md §8).
+/// The state and cache directories live under `cfg.state_dir` so
+/// guard selection and the consensus cache persist across restarts —
+/// re-picking guards on every start is a privacy regression
+/// (DESIGN.md §8).
 fn build_arti_config(cfg: &TorConfig) -> Result<TorClientConfig> {
     let mut builder = TorClientConfig::builder();
     builder

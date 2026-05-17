@@ -1,5 +1,5 @@
-//! Control socket — line-JSON over a Unix socket, mirroring dnsd's
-//! control protocol. Queried by `tord-query`. See DESIGN.md §10.
+//! Control socket — line-JSON over a Unix socket. Queried by
+//! `tord-query`. See DESIGN.md §10.
 //!
 //! Protocol: the client writes one line — a bare command word — and
 //! reads one line of JSON back. Commands:

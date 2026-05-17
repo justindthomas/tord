@@ -1,4 +1,4 @@
-//! SOCKS5 server (RFC 1928) — the dnsd↔tord front door. See
+//! SOCKS5 server (RFC 1928) — the client-facing front door. See
 //! DESIGN.md §5.
 //!
 //! Scope: the `CONNECT` command only. `BIND` / `UDP ASSOCIATE` are

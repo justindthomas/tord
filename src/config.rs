@@ -1,7 +1,8 @@
-//! tord configuration — the `tor:` section of router.yaml.
+//! tord configuration — the `tor:` section of a YAML config file.
 //!
-//! tord reads only its own section; every other key in router.yaml is
-//! ignored. See DESIGN.md §9.
+//! tord reads only its own `tor:` mapping; any other top-level key is
+//! ignored, so the file may be tord's own config or a section of a
+//! larger shared config. See DESIGN.md §9.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -9,9 +10,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-pub const DEFAULT_CONFIG_PATH: &str = "/persistent/config/router.yaml";
+pub const DEFAULT_CONFIG_PATH: &str = "/etc/tord/config.yaml";
 pub const DEFAULT_SOCKS_LISTEN: &str = "127.0.0.1:9050";
-pub const DEFAULT_STATE_DIR: &str = "/persistent/data/tord";
+pub const DEFAULT_STATE_DIR: &str = "/var/lib/tord";
 pub const DEFAULT_BOOTSTRAP_TIMEOUT_SECS: u64 = 120;
 
 /// Circuit-isolation policy. The SOCKS username (RFC 1929) is mapped
@@ -36,15 +37,16 @@ pub enum Isolation {
 #[serde(default)]
 pub struct TorConfig {
     /// Master switch. When false (or the section is absent) tord
-    /// exits cleanly — impd's supervisor gates the daemon on this.
+    /// exits cleanly — a process supervisor can gate the daemon on
+    /// this.
     pub enabled: bool,
     /// Address the SOCKS5 server binds (on a VclListener under the
-    /// `vcl` feature). dnsd connects here.
+    /// `vcl` feature). Consumers connect here.
     pub socks_listen: SocketAddr,
     /// Circuit-isolation policy.
     pub isolation: Isolation,
     /// arti state directory — guard selection + consensus cache.
-    /// Must be on persistent storage so guards survive reboots.
+    /// Must be on persistent storage so guards survive restarts.
     pub state_dir: PathBuf,
     /// How long to wait for the Tor client to bootstrap before
     /// CONNECTs start failing fast (fail-closed).
@@ -65,11 +67,11 @@ impl Default for TorConfig {
     }
 }
 
-/// Just enough of router.yaml to pull out `tor:`. Unknown keys (every
-/// other section) are ignored by serde.
+/// Just enough of the config file to pull out `tor:`. Any other
+/// top-level key is ignored by serde.
 #[derive(Deserialize, Default)]
 #[serde(default)]
-struct RouterYaml {
+struct ConfigFile {
     tor: Option<TorConfig>,
 }
 
@@ -81,7 +83,7 @@ pub fn load(path: &Path) -> Result<Option<TorConfig>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
-    let doc: RouterYaml = serde_yaml::from_str(&raw)
+    let doc: ConfigFile = serde_yaml::from_str(&raw)
         .with_context(|| format!("parsing {}", path.display()))?;
     Ok(doc.tor)
 }
@@ -92,7 +94,7 @@ mod tests {
 
     #[test]
     fn absent_section_is_none() {
-        let doc: RouterYaml = serde_yaml::from_str("system: {}\n").unwrap();
+        let doc: ConfigFile = serde_yaml::from_str("system: {}\n").unwrap();
         assert!(doc.tor.is_none());
     }
 

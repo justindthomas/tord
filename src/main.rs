@@ -1,7 +1,7 @@
 //! tord entry point.
 //!
 //! Responsibilities (see DESIGN.md §7, §12):
-//!   1. Load the `tor:` section of router.yaml.
+//!   1. Load the `tor:` section of the config file.
 //!   2. Build a *current-thread* tokio runtime inside a `LocalSet` —
 //!      VCL sessions are thread-owned, so arti, the SOCKS listener
 //!      and every connection handler must run on the one thread that
@@ -22,7 +22,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 #[derive(Parser, Debug)]
 #[command(name = "tord", about = "VPP-native anonymising SOCKS5 proxy (Tor egress)")]
 struct Args {
-    /// Path to router.yaml — only the `tor:` section is read.
+    /// Path to the YAML config file — only the `tor:` section is read.
     #[arg(long, default_value = tord::config::DEFAULT_CONFIG_PATH)]
     config: PathBuf,
 
