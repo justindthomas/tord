@@ -66,8 +66,8 @@ impl TordNetProvider {
             vcl_rs::VclStream::connect_async(
                 *addr,
                 None,
-                std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS),
                 self.reactor.clone(),
+                std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS),
             )
             .await
             .map_err(io::Error::other)

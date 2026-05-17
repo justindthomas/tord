@@ -225,21 +225,31 @@ imp-tord` + `imp-tord-query`; an impd-supervised child gated on the
 
 ## 12. Phased plan
 
-1. **Skeleton** — repo, config parse, CLI, single-thread runtime,
-   logging, control socket stub. (this commit)
-2. **VclNetProvider** — `NetStreamProvider<SocketAddr>` over `VclStream`;
-   pin arti version, resolve the `StreamOps` surface, `CompoundRuntime`
-   assembly. Unit-testable against a plain TCP echo without VPP.
-3. **arti lifecycle** — `TorManager`: bootstrap, state dir, isolation
-   tokens, `connect(host, port)` returning an anonymised stream.
-4. **SOCKS5 server** — RFC 1928 `CONNECT` over `VclListener`, splice to
-   the arti stream; fail-closed semantics.
-5. **Control socket + tord-query**, SIGHUP reload, metrics.
-6. **IMP integration** — systemd unit, impd supervisor entry,
+1. ✅ **Skeleton** — repo, config parse, CLI, single-thread runtime,
+   logging, module stubs.
+2. ✅ **VclNetProvider** — `NetStreamProvider<SocketAddr>` over
+   `VclStream` (backend-generic; `tokio::net::TcpStream` under
+   `kernel-sockets`). `StreamOps` no-op, `CompoundRuntime` assembled
+   via `RuntimeSubstExt::with_tcp_provider`. Unit-tested against a
+   plain TCP echo.
+3. ✅ **arti lifecycle** — `TorManager`: bootstrap + persistent state
+   dir, `connect()` returning an anonymised stream. (Isolation-token
+   wiring still TODO — see §8.)
+4. ✅ **SOCKS5 server** — RFC 1928 `CONNECT` over the VCL/TCP
+   listener, splice to the arti stream; fail-closed.
+5. ✅ **Control socket + tord-query** + metrics. (SIGHUP currently
+   logs; live listener rebind still TODO — see §9.)
+6. ⏳ **IMP integration** — systemd unit, impd supervisor entry,
    `external-daemon-versions.txt`, install paths; dnsd-side SOCKS
    client + `via: tor` forwarder option (separate `dnsd` change).
-7. **Hardening** — fail-closed audit (no query may ever bypass Tor),
+7. ⏳ **Hardening** — fail-closed audit (no query may ever bypass Tor),
    bootstrap-not-ready behaviour, exit-policy/DoH fallback, soak test.
+
+**Verification status:** phases 1–5 are `cargo check` + `clippy` +
+`test` green on the `kernel-sockets` backend (macOS dev host). Every
+`vcl`-feature API call is verified against `vcl-rs` source, but a
+`vcl`-feature build against `libvppcom` (build host, Bookworm
+container) has not yet been run — that is the first step of phase 6.
 
 ## 13. Open questions
 

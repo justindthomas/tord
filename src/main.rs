@@ -69,6 +69,8 @@ fn main() -> Result<()> {
 }
 
 async fn run(cfg: tord::config::TorConfig, control_socket: PathBuf) -> Result<()> {
+    use std::time::Instant;
+
     #[cfg(feature = "vcl")]
     let reactor = vcl_rs::VclReactor::new().context("creating VCL reactor")?;
 
@@ -85,15 +87,33 @@ async fn run(cfg: tord::config::TorConfig, control_socket: PathBuf) -> Result<()
     );
     tracing::info!("Tor client bootstrapped");
 
-    let server = Arc::new(tord::socks::SocksServer::new(cfg.isolation, tor));
+    let metrics = Arc::new(tord::metrics::Metrics::default());
+    let server = Arc::new(tord::socks::SocksServer::new(
+        cfg.isolation,
+        tor,
+        metrics.clone(),
+    ));
+    let control_state = Arc::new(tord::control::ControlState {
+        started: Instant::now(),
+        socks_listen: cfg.socks_listen,
+        metrics,
+    });
 
-    // TODO(phase 5): control socket at `control_socket`; SIGHUP reload.
-    let _ = &control_socket;
+    // SIGHUP: live reconfigure. Re-binding listeners on a config
+    // change is a follow-up — for now the request is logged. See
+    // DESIGN.md §9.
+    let mut sighup = signal(SignalKind::hangup()).context("installing SIGHUP handler")?;
+    tokio::task::spawn_local(async move {
+        while sighup.recv().await.is_some() {
+            tracing::info!("SIGHUP — live reconfigure is a follow-up (see DESIGN.md §9)");
+        }
+    });
 
     #[cfg(feature = "vcl")]
     let socks = server.serve(cfg.socks_listen, reactor);
     #[cfg(feature = "kernel-sockets")]
     let socks = server.serve(cfg.socks_listen);
+    let control = tord::control::serve(control_socket, control_state);
 
     let mut sigterm = signal(SignalKind::terminate()).context("installing SIGTERM handler")?;
     tokio::select! {
@@ -101,6 +121,10 @@ async fn run(cfg: tord::config::TorConfig, control_socket: PathBuf) -> Result<()
         r = socks => match r {
             Ok(()) => tracing::warn!("SOCKS server exited unexpectedly"),
             Err(e) => tracing::error!(error = %e, "SOCKS server failed"),
+        },
+        r = control => match r {
+            Ok(()) => tracing::warn!("control socket exited unexpectedly"),
+            Err(e) => tracing::error!(error = %e, "control socket failed"),
         },
     }
     Ok(())

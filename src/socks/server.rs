@@ -11,6 +11,7 @@
 //! gets a SOCKS general-failure reply — never a direct fallback.
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
@@ -18,6 +19,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tor_rtcompat::Runtime;
 
 use crate::config::Isolation;
+use crate::metrics::Metrics;
 use crate::tor::TorManager;
 
 const SOCKS5: u8 = 0x05;
@@ -39,11 +41,16 @@ const ATYP_IPV6: u8 = 0x04;
 pub struct SocksServer<R: Runtime> {
     isolation: Isolation,
     tor: Arc<TorManager<R>>,
+    metrics: Arc<Metrics>,
 }
 
 impl<R: Runtime> SocksServer<R> {
-    pub fn new(isolation: Isolation, tor: Arc<TorManager<R>>) -> Self {
-        Self { isolation, tor }
+    pub fn new(isolation: Isolation, tor: Arc<TorManager<R>>, metrics: Arc<Metrics>) -> Self {
+        Self {
+            isolation,
+            tor,
+            metrics,
+        }
     }
 
     /// Accept loop. Binds `listen` and serves forever; each accepted
@@ -149,19 +156,29 @@ impl<R: Runtime> SocksServer<R> {
         // --- open the anonymised stream (fail closed) ---
         let _ = self.isolation; // see TODO(isolation) above
         tracing::debug!(%peer, %host, port, isolation_user = ?iso_user, "SOCKS CONNECT");
+        self.metrics.connects_total.fetch_add(1, Ordering::Relaxed);
         let mut upstream = match self.tor.connect((host.as_str(), port)).await {
             Ok(s) => s,
             Err(e) => {
+                self.metrics.connects_failed.fetch_add(1, Ordering::Relaxed);
                 send_reply(&mut client, REP_GENERAL_FAILURE).await?;
                 return Err(e.context("Tor CONNECT failed — failing closed"));
             }
         };
         send_reply(&mut client, REP_SUCCESS).await?;
+        self.metrics.connects_ok.fetch_add(1, Ordering::Relaxed);
 
         // --- splice client <-> Tor circuit ---
-        tokio::io::copy_bidirectional(&mut client, &mut upstream)
-            .await
-            .context("proxying SOCKS stream")?;
+        let (to_upstream, to_client) =
+            tokio::io::copy_bidirectional(&mut client, &mut upstream)
+                .await
+                .context("proxying SOCKS stream")?;
+        self.metrics
+            .bytes_to_upstream
+            .fetch_add(to_upstream, Ordering::Relaxed);
+        self.metrics
+            .bytes_to_client
+            .fetch_add(to_client, Ordering::Relaxed);
         Ok(())
     }
 }

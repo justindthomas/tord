@@ -9,6 +9,7 @@
 
 pub mod config;
 pub mod control;
+pub mod metrics;
 pub mod runtime;
 pub mod socks;
 pub mod tor;
