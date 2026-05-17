@@ -194,7 +194,9 @@ SIGHUP re-reads `tor:`. A `socks_listen` change rebinds the listener
 
 ## 10. Control socket
 
-`/run/tord.sock`, line-JSON. `tord-query` is the CLI. Commands (v1):
+`/run/tord.sock`, line-JSON. The `tord query <cmd>` subcommand is the
+operator CLI — a subcommand of the daemon binary, not a separate
+binary (matching the imp-bgpd / imp-ospfd pattern). Commands (v1):
 
 - `status` — uptime, SOCKS listener address
 - `stats` — CONNECT counts, bytes proxied
@@ -241,7 +243,7 @@ service manager.)
    wiring still TODO — see §8.)
 4. ✅ **SOCKS5 server** — RFC 1928 `CONNECT` over the VCL/TCP
    listener, splice to the arti stream; fail-closed.
-5. ✅ **Control socket + tord-query** + metrics. (SIGHUP currently
+5. ✅ **Control socket + `tord query`** + metrics. (SIGHUP currently
    logs; live listener rebind still TODO — see §9.)
 6. ⏳ **Host integration** — pin + build for the target, install the
    binaries, supervise the process, gate on the `tor:` config block;

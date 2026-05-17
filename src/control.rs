@@ -1,5 +1,5 @@
-//! Control socket — line-JSON over a Unix socket. Queried by
-//! `tord-query`. See DESIGN.md §10.
+//! Control socket — line-JSON over a Unix socket. Queried by the
+//! `tord query` subcommand. See DESIGN.md §10.
 //!
 //! Protocol: the client writes one line — a bare command word — and
 //! reads one line of JSON back. Commands:
@@ -93,4 +93,16 @@ fn dispatch(cmd: &str, state: &ControlState) -> Reply {
             message: format!("unknown command {other:?}"),
         },
     }
+}
+
+/// Query a running tord over its control socket: send one command
+/// line, read the JSON reply. Synchronous — this is the client half,
+/// driven by the `tord query` subcommand (see `main.rs`).
+pub fn query(socket: &std::path::Path, command: &str) -> std::io::Result<String> {
+    use std::io::{Read, Write};
+    let mut stream = std::os::unix::net::UnixStream::connect(socket)?;
+    writeln!(stream, "{command}")?;
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply)?;
+    Ok(reply)
 }

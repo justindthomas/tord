@@ -67,10 +67,6 @@ path = "src/lib.rs"
 name = "tord"
 path = "src/main.rs"
 
-[[bin]]
-name = "tord-query"
-path = "src/bin/tord-query.rs"
-
 # Local development override: when ../vcl-rs exists alongside the tord
 # checkout, prefer the local copy over the git dependency.
 [patch."https://github.com/justindthomas/vcl-rs"]
