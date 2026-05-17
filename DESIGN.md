@@ -87,22 +87,62 @@ proxies TCP streams only.
 No path touches the kernel networking stack. The client→tord hop is a
 VPP cut-through/local session; tord→Tor relays are VCL streams.
 
-## 5. The client↔tord interface: SOCKS5 over VCL
+## 5. The client↔tord interface: SOCKS5
 
-tord runs a **SOCKS5 server bound on a `vcl_rs::VclListener`** at a
-loopback address (default `127.0.0.1:9050`, configurable). A consumer
-reaches it with `VclStream::connect` — both ends on the VPP session
-layer.
+tord runs a **SOCKS5 server (RFC 1928, `CONNECT` only)** on a
+`vcl_rs::VclListener`. SOCKS5 is chosen over a bespoke RPC because it
+is the universal "proxy my TCP" contract — it makes tord reusable by
+anything that speaks SOCKS5, not by one consumer.
 
-SOCKS5 (RFC 1928) is chosen over a bespoke RPC because it is the
-universal "proxy my TCP" contract and makes tord reusable for free.
-tord implements the `CONNECT` command only; `BIND`/`UDP ASSOCIATE` are
-rejected with reply `0x07` (command not supported). Auth: `NO AUTH`
-plus optional username/password (RFC 1929) — the username is **not**
-used for access control but as the **circuit-isolation token** (§8).
+`BIND` / `UDP ASSOCIATE` are rejected with reply `0x07` (Tor has no
+UDP transport; a client never needs `BIND`). Auth: `NO AUTH` plus
+optional username/password (RFC 1929) — the username is **not** an
+access credential, it is the **circuit-isolation token** (§8).
+Domain-name targets (`ATYP 0x03`) are passed to arti **unresolved**,
+so the Tor exit does the lookup — a SOCKS5 client configured for
+"remote DNS" leaks no name resolution.
 
-The client side (a SOCKS5 client speaking DoT-over-Tor, for the DNS use
-case) lives in the consumer, not in this repo.
+Because the listener is a `VclListener`, VPP's session layer
+terminates the connection — and that serves **two classes of client**:
+
+**1. Co-located VCL daemons.** Another VCL app (e.g. a DNS resolver
+doing DoT-over-Tor) reaches `socks_listen` with `VclStream::connect`;
+VPP gives it a cut-through/local session — no NIC, no kernel. This is
+the path the motivating DNS use case takes.
+
+**2. Network clients — the LAN SOCKS gateway.** A `VclListener` also
+accepts ordinary TCP arriving from the wire (the same way a VPP-native
+DNS resolver's DoT listener serves real LAN clients). So with
+`socks_listen` set to a **routable address VPP owns** rather than a
+loopback, any host that can route to it — a laptop browser, `ssh` via
+`ProxyCommand`, `curl --socks5-hostname` — can use tord as a Tor SOCKS
+gateway for a whole network segment.
+
+The SOCKS5 *client* — co-located daemon or LAN host — is out of scope
+for this repo; tord only provides the server.
+
+### 5.1 Running the LAN SOCKS gateway
+
+To expose tord to LAN clients:
+
+- Set `socks_listen` to a LAN-reachable IP VPP owns (a dataplane
+  loopback or interface address), **not** the `127.0.0.1` default.
+  The default is loopback precisely so tord is *not* network-exposed
+  unless the operator opts in.
+- **Gate the port with the host firewall.** An open SOCKS proxy is
+  free Tor egress for anyone who can reach it; the firewall must allow
+  `socks_listen` only from the intended client prefix(es). Treat an
+  ungated SOCKS port as a misconfiguration, not a default.
+- Tell clients to use **remote DNS** (`socks5h://` for curl, "Proxy
+  DNS when using SOCKS v5" in Firefox) so name resolution also rides
+  Tor — tord already passes domain targets through unresolved (above).
+- **QUIC / HTTP-3 will not traverse tord** — it is UDP, and Tor is
+  TCP-only. Browsers fall back to TCP; `ssh` and plain HTTPS are
+  unaffected. This is a Tor limitation, not a tord one.
+- Per-client circuit isolation needs the client to present a distinct
+  SOCKS username (the isolation token, §8). Browsers rarely expose
+  that, so LAN-gateway traffic typically shares circuits per the
+  `isolation` policy.
 
 ## 6. The VCL NetStreamProvider — the crux
 
@@ -183,7 +223,8 @@ integrated deployment — the config path is set with `--config`.
 ```yaml
 tor:
   enabled: true
-  socks_listen: "127.0.0.1:9050"   # VCL-bound SOCKS5 server
+  socks_listen: "127.0.0.1:9050"   # loopback = local consumers only;
+                                   # a routable IP = LAN gateway (§5.1)
   isolation: per-upstream          # shared | per-upstream | per-query
   state_dir: /var/lib/tord
   bootstrap_timeout_secs: 120
