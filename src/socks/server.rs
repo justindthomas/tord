@@ -13,6 +13,7 @@
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -76,11 +77,18 @@ impl<R: Runtime> SocksServer<R> {
             .map_err(|e| anyhow::anyhow!("binding SOCKS listener on {listen}: {e}"))?;
         tracing::info!(%listen, isolation = ?self.isolation, "SOCKS5 server listening");
         loop {
-            let (client, peer) = listener
-                .accept()
-                .await
-                .map_err(|e| anyhow::anyhow!("SOCKS accept: {e}"))?;
-            self.clone().spawn_connection(client, peer);
+            match listener.accept().await {
+                Ok((client, peer)) => self.clone().spawn_connection(client, peer),
+                // A failed accept is per-connection and transient —
+                // e.g. ECONNABORTED, when a client gives up before
+                // we accept it (common under a burst). It must never
+                // kill the server: log, briefly back off so a
+                // persistent error can't spin the CPU, keep going.
+                Err(e) => {
+                    tracing::warn!(error = %e, "SOCKS accept failed; continuing");
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
         }
     }
 
@@ -91,8 +99,15 @@ impl<R: Runtime> SocksServer<R> {
             .with_context(|| format!("binding SOCKS listener on {listen}"))?;
         tracing::info!(%listen, isolation = ?self.isolation, "SOCKS5 server listening");
         loop {
-            let (client, peer) = listener.accept().await.context("SOCKS accept")?;
-            self.clone().spawn_connection(client, peer);
+            match listener.accept().await {
+                Ok((client, peer)) => self.clone().spawn_connection(client, peer),
+                // See the `vcl` variant: a per-connection accept
+                // error must not kill the server.
+                Err(e) => {
+                    tracing::warn!(error = %e, "SOCKS accept failed; continuing");
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
         }
     }
 
