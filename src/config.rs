@@ -4,7 +4,7 @@
 //! ignored, so the file may be tord's own config or a section of a
 //! larger shared config. See DESIGN.md §9.
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -51,6 +51,14 @@ pub struct TorConfig {
     /// How long to wait for the Tor client to bootstrap before
     /// CONNECTs start failing fast (fail-closed).
     pub bootstrap_timeout_secs: u64,
+    /// Source IPv4 address for tord's outbound connections to Tor
+    /// relays. Under the `vcl` backend VPP's FIB source-selection can
+    /// hand a VCL client session an unusable source; an explicit WAN
+    /// address makes circuits actually establish. Unset → let the
+    /// stack choose.
+    pub source_v4: Option<Ipv4Addr>,
+    /// Source IPv6 address — same role as `source_v4`.
+    pub source_v6: Option<Ipv6Addr>,
 }
 
 impl Default for TorConfig {
@@ -63,6 +71,8 @@ impl Default for TorConfig {
             isolation: Isolation::default(),
             state_dir: PathBuf::from(DEFAULT_STATE_DIR),
             bootstrap_timeout_secs: DEFAULT_BOOTSTRAP_TIMEOUT_SECS,
+            source_v4: None,
+            source_v6: None,
         }
     }
 }

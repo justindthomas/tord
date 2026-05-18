@@ -27,10 +27,16 @@ use tor_rtcompat::{Runtime, RuntimeSubstExt};
 /// to the current runtime via `TokioRustlsRuntime::current`), which
 /// is also the VCL worker-0 thread — see DESIGN.md §7.
 #[cfg(feature = "vcl")]
-pub fn build_runtime(reactor: vcl_rs::VclReactor) -> Result<impl Runtime> {
+pub fn build_runtime(
+    reactor: vcl_rs::VclReactor,
+    source_v4: Option<std::net::Ipv4Addr>,
+    source_v6: Option<std::net::Ipv6Addr>,
+) -> Result<impl Runtime> {
     use tor_rtcompat::tokio::TokioRustlsRuntime;
     let base = TokioRustlsRuntime::current().context("attaching to current tokio runtime")?;
-    Ok(base.with_tcp_provider(net::TordNetProvider::new(reactor)))
+    Ok(base.with_tcp_provider(net::TordNetProvider::new(
+        reactor, source_v4, source_v6,
+    )))
 }
 
 #[cfg(feature = "kernel-sockets")]

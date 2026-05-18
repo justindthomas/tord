@@ -45,14 +45,31 @@ type Inner = tokio::net::TcpStream;
 pub struct TordNetProvider {
     #[cfg(feature = "vcl")]
     reactor: vcl_rs::VclReactor,
+    /// Explicit source addresses for outbound connections. VPP's FIB
+    /// source-selection can hand a VCL client session an unusable
+    /// source, so an explicit WAN address is what makes circuits
+    /// actually establish. `None` → let the stack choose.
+    #[cfg(feature = "vcl")]
+    source_v4: Option<std::net::Ipv4Addr>,
+    #[cfg(feature = "vcl")]
+    source_v6: Option<std::net::Ipv6Addr>,
 }
 
 impl TordNetProvider {
     /// Construct the provider. The `vcl` build needs the VCL reactor
-    /// the streams register their readiness against.
+    /// the streams register readiness against, plus the source
+    /// addresses outbound connections bind.
     #[cfg(feature = "vcl")]
-    pub fn new(reactor: vcl_rs::VclReactor) -> Self {
-        Self { reactor }
+    pub fn new(
+        reactor: vcl_rs::VclReactor,
+        source_v4: Option<std::net::Ipv4Addr>,
+        source_v6: Option<std::net::Ipv6Addr>,
+    ) -> Self {
+        Self {
+            reactor,
+            source_v4,
+            source_v6,
+        }
     }
 
     #[cfg(feature = "kernel-sockets")]
@@ -63,9 +80,19 @@ impl TordNetProvider {
     async fn connect_inner(&self, addr: &SocketAddr) -> io::Result<Inner> {
         #[cfg(feature = "vcl")]
         {
+            // Bind an explicit source so VPP's FIB does not hand the
+            // session an unusable source address.
+            let source = match addr.ip() {
+                std::net::IpAddr::V4(_) => {
+                    self.source_v4.map(|s| SocketAddr::new(s.into(), 0))
+                }
+                std::net::IpAddr::V6(_) => {
+                    self.source_v6.map(|s| SocketAddr::new(s.into(), 0))
+                }
+            };
             vcl_rs::VclStream::connect_async(
                 *addr,
-                None,
+                source,
                 self.reactor.clone(),
                 std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS),
             )

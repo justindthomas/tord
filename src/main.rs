@@ -11,7 +11,7 @@
 //!      and every connection handler must run on the one thread that
 //!      registers VCL worker-0. Hence no `#[tokio::main]`, and
 //!      per-connection tasks use `spawn_local`.
-//!   3. Bootstrap the Tor client.
+//!   3. Build the Tor client; bootstrap runs on a background task.
 //!   4. Serve the SOCKS5 server + control socket until SIGTERM.
 
 use std::path::PathBuf;
@@ -96,23 +96,36 @@ fn main() -> Result<()> {
 }
 
 async fn run(cfg: tord::config::TorConfig, control_socket: PathBuf) -> Result<()> {
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     #[cfg(feature = "vcl")]
     let reactor = vcl_rs::VclReactor::new().context("creating VCL reactor")?;
 
     #[cfg(feature = "vcl")]
-    let runtime = tord::runtime::build_runtime(reactor.clone())?;
+    let runtime =
+        tord::runtime::build_runtime(reactor.clone(), cfg.source_v4, cfg.source_v6)?;
     #[cfg(feature = "kernel-sockets")]
     let runtime = tord::runtime::build_runtime()?;
 
-    tracing::info!(state_dir = %cfg.state_dir.display(), "bootstrapping Tor client");
-    let tor = Arc::new(
-        tord::tor::TorManager::bootstrap(runtime, &cfg)
-            .await
-            .context("Tor bootstrap")?,
-    );
-    tracing::info!("Tor client bootstrapped");
+    // Build the Tor client without blocking on bootstrap, then drive
+    // bootstrap on a background task — the control + SOCKS sockets
+    // must come up even while Tor is still bootstrapping (or failing
+    // to), so the daemon stays observable and killable.
+    let tor = Arc::new(tord::tor::TorManager::new(runtime, &cfg).context("Tor client")?);
+    {
+        let tor = tor.clone();
+        let timeout = Duration::from_secs(cfg.bootstrap_timeout_secs);
+        tracing::info!(state_dir = %cfg.state_dir.display(), "bootstrapping Tor client");
+        tokio::task::spawn_local(async move {
+            match tor.bootstrap(timeout).await {
+                Ok(()) => tracing::info!("Tor client bootstrapped"),
+                Err(e) => tracing::error!(
+                    error = %e,
+                    "Tor bootstrap failed — SOCKS CONNECTs fail closed until it recovers"
+                ),
+            }
+        });
+    }
 
     let metrics = Arc::new(tord::metrics::Metrics::default());
     let server = Arc::new(tord::socks::SocksServer::new(
