@@ -148,7 +148,6 @@ async fn run(cfg: tord::config::TorConfig, control_socket: PathBuf) -> Result<()
     let metrics = Arc::new(tord::metrics::Metrics::default());
     let streams = Arc::new(tord::streams::StreamRegistry::default());
     let server = Arc::new(tord::socks::SocksServer::new(
-        cfg.isolation,
         tor,
         metrics.clone(),
         streams.clone(),

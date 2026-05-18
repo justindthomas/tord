@@ -19,7 +19,6 @@ use anyhow::{bail, Context, Result};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tor_rtcompat::Runtime;
 
-use crate::config::Isolation;
 use crate::metrics::Metrics;
 use crate::socks::metered::Metered;
 use crate::streams::StreamRegistry;
@@ -42,21 +41,22 @@ const ATYP_IPV6: u8 = 0x04;
 /// The SOCKS5 server. Cloneable via `Arc`; one is shared across all
 /// accepted connections.
 pub struct SocksServer<R: Runtime> {
-    isolation: Isolation,
     tor: Arc<TorManager<R>>,
     metrics: Arc<Metrics>,
     streams: Arc<StreamRegistry>,
 }
 
 impl<R: Runtime> SocksServer<R> {
+    /// The circuit-isolation policy now lives in `TorManager` (it
+    /// owns the username→token map), so it is no longer a field
+    /// here — the username is read off each connection and handed
+    /// straight to `TorManager::connect`.
     pub fn new(
-        isolation: Isolation,
         tor: Arc<TorManager<R>>,
         metrics: Arc<Metrics>,
         streams: Arc<StreamRegistry>,
     ) -> Self {
         Self {
-            isolation,
             tor,
             metrics,
             streams,
@@ -75,7 +75,7 @@ impl<R: Runtime> SocksServer<R> {
     ) -> Result<()> {
         let listener = vcl_rs::VclListener::bind(listen, reactor)
             .map_err(|e| anyhow::anyhow!("binding SOCKS listener on {listen}: {e}"))?;
-        tracing::info!(%listen, isolation = ?self.isolation, "SOCKS5 server listening");
+        tracing::info!(%listen, isolation = ?self.tor.isolation(), "SOCKS5 server listening");
         loop {
             match listener.accept().await {
                 Ok((client, peer)) => self.clone().spawn_connection(client, peer),
@@ -97,7 +97,7 @@ impl<R: Runtime> SocksServer<R> {
         let listener = tokio::net::TcpListener::bind(listen)
             .await
             .with_context(|| format!("binding SOCKS listener on {listen}"))?;
-        tracing::info!(%listen, isolation = ?self.isolation, "SOCKS5 server listening");
+        tracing::info!(%listen, isolation = ?self.tor.isolation(), "SOCKS5 server listening");
         loop {
             match listener.accept().await {
                 Ok((client, peer)) => self.clone().spawn_connection(client, peer),
@@ -142,8 +142,9 @@ impl<R: Runtime> SocksServer<R> {
             .context("reading SOCKS auth methods")?;
 
         // The username (if user/pass is offered) is the circuit-
-        // isolation token. TODO(isolation): feed `iso_user` +
-        // self.isolation into arti StreamPrefs — see DESIGN.md §8.
+        // isolation token: it is handed to `TorManager::connect`,
+        // which maps it to an arti `IsolationToken` per the
+        // configured `Isolation` mode — see DESIGN.md §8.
         let mut iso_user: Option<String> = None;
         if methods.contains(&METHOD_USERPASS) {
             client.write_all(&[SOCKS5, METHOD_USERPASS]).await?;
@@ -178,15 +179,18 @@ impl<R: Runtime> SocksServer<R> {
         };
 
         // --- open the anonymised stream (fail closed) ---
-        let _ = self.isolation; // see TODO(isolation) above
         let target = format!("{host}:{port}");
         tracing::debug!(%peer, %target, isolation_user = ?iso_user, "SOCKS CONNECT");
         self.metrics.connects_total.fetch_add(1, Ordering::Relaxed);
         // Register the connection so `tord query streams` can see it;
         // the handle removes the row when this function returns,
         // however it returns.
-        let stream = self.streams.register(peer, target, iso_user);
-        let mut upstream = match self.tor.connect((host.as_str(), port)).await {
+        let stream = self.streams.register(peer, target, iso_user.clone());
+        let mut upstream = match self
+            .tor
+            .connect((host.as_str(), port), iso_user.as_deref())
+            .await
+        {
             Ok(s) => s,
             Err(e) => {
                 self.metrics.connects_failed.fetch_add(1, Ordering::Relaxed);

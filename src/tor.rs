@@ -6,26 +6,41 @@
 //! leave the daemon unobservable. The state directory is pointed at
 //! persistent storage so guard selection survives restarts.
 //!
-//! Still TODO: circuit-isolation token mapping from the SOCKS
-//! username (DESIGN.md §8).
+//! Circuit isolation (DESIGN.md §8): the SOCKS username (RFC 1929) is
+//! mapped to an arti `IsolationToken` per the configured `Isolation`
+//! mode. Streams carrying the same token may share circuits; streams
+//! with different tokens get separate circuit families.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use arti_client::config::CfgPath;
-use arti_client::{BootstrapBehavior, DataStream, IntoTorAddr, TorClient, TorClientConfig};
+use arti_client::{
+    BootstrapBehavior, DataStream, IntoTorAddr, IsolationToken, StreamPrefs, TorClient,
+    TorClientConfig,
+};
 use serde::Serialize;
 use tor_rtcompat::Runtime;
 
-use crate::config::TorConfig;
+use crate::config::{Isolation, TorConfig};
 
 /// Owns the Tor client. Generic over the runtime so the opaque
 /// `impl Runtime` from `runtime::build_runtime` flows straight
 /// through.
 pub struct TorManager<R: Runtime> {
     client: TorClient<R>,
+    /// Configured circuit-isolation policy.
+    isolation: Isolation,
+    /// Process-stable token shared by every stream in `Shared` mode,
+    /// and used as the default (no-username) token in `PerUpstream`.
+    default_token: IsolationToken,
+    /// Username → token map for `PerUpstream`: same username always
+    /// resolves to the same token for the process lifetime, so its
+    /// streams share circuits. Unused in `Shared` / `PerQuery`.
+    per_upstream: Mutex<HashMap<String, IsolationToken>>,
 }
 
 impl<R: Runtime> TorManager<R> {
@@ -41,7 +56,41 @@ impl<R: Runtime> TorManager<R> {
             .bootstrap_behavior(BootstrapBehavior::OnDemand)
             .create_unbootstrapped()
             .context("building the Tor client")?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            isolation: cfg.isolation,
+            default_token: IsolationToken::new(),
+            per_upstream: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Resolve the `IsolationToken` for a stream, given the SOCKS
+    /// username (the RFC 1929 `iso_user`) and the configured policy:
+    ///
+    /// * `Shared` — always the one `default_token`; every stream
+    ///   shares circuits.
+    /// * `PerUpstream` — a token keyed by `user`. The same username
+    ///   always maps to the same token (held in `per_upstream`), so
+    ///   its streams share circuits while different usernames get
+    ///   separate circuit families. No username ⇒ `default_token`.
+    /// * `PerQuery` — a fresh unique token every call; every stream
+    ///   is isolated.
+    fn isolation_token(&self, user: Option<&str>) -> IsolationToken {
+        match self.isolation {
+            Isolation::Shared => self.default_token,
+            Isolation::PerQuery => IsolationToken::new(),
+            Isolation::PerUpstream => match user {
+                None => self.default_token,
+                Some(u) => {
+                    let mut map = self
+                        .per_upstream
+                        .lock()
+                        .expect("per_upstream isolation map poisoned");
+                    *map.entry(u.to_owned())
+                        .or_insert_with(IsolationToken::new)
+                }
+            },
+        }
     }
 
     /// Drive bootstrap to completion, bounded by `timeout`. Meant to
@@ -58,11 +107,26 @@ impl<R: Runtime> TorManager<R> {
     /// treats as an address — notably `(&str, u16)`, where the host
     /// may be a domain that the Tor *exit* resolves. Resolving the
     /// name locally would leak the lookup, so we never do.
-    pub async fn connect<A: IntoTorAddr>(&self, target: A) -> Result<DataStream> {
+    ///
+    /// `iso_user` is the SOCKS RFC 1929 username (if any); it drives
+    /// circuit isolation per the configured `Isolation` mode — see
+    /// [`Self::isolation_token`].
+    pub async fn connect<A: IntoTorAddr>(
+        &self,
+        target: A,
+        iso_user: Option<&str>,
+    ) -> Result<DataStream> {
+        let mut prefs = StreamPrefs::new();
+        prefs.set_isolation(self.isolation_token(iso_user));
         self.client
-            .connect(target)
+            .connect_with_prefs(target, &prefs)
             .await
             .context("opening anonymised Tor stream")
+    }
+
+    /// The configured circuit-isolation policy — for logging.
+    pub fn isolation(&self) -> Isolation {
+        self.isolation
     }
 
     /// Snapshot arti's current bootstrap status. Cheap (a lock plus
