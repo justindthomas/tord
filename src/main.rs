@@ -40,11 +40,14 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Query the running daemon over its control socket and print the
-    /// JSON reply.
+    /// reply.
     Query {
-        /// Control command: status, stats, reload, or ping.
+        /// Control command: status, stats, streams, reload, or ping.
         #[arg(default_value = "status")]
         command: String,
+        /// Output format.
+        #[arg(long = "output", short = 'o', value_enum, default_value = "table")]
+        output: tord::format::OutputFormat,
     },
 }
 
@@ -53,10 +56,10 @@ fn main() -> Result<()> {
 
     // `tord query …` — a plain synchronous control-socket round-trip.
     // No logging subscriber, no runtime, no VCL.
-    if let Some(Command::Query { command }) = &cli.command {
+    if let Some(Command::Query { command, output }) = &cli.command {
         let reply = tord::control::query(&cli.control_socket, command)
             .with_context(|| format!("querying tord at {}", cli.control_socket.display()))?;
-        print!("{reply}");
+        println!("{}", tord::format::render(command, &reply, *output));
         return Ok(());
     }
 
@@ -127,16 +130,35 @@ async fn run(cfg: tord::config::TorConfig, control_socket: PathBuf) -> Result<()
         });
     }
 
+    // Poll arti's bootstrap status into a shared cell so the control
+    // socket can report readiness. Cheap (a lock + a small clone);
+    // 2-second granularity is plenty for an operator-facing field.
+    let bootstrap_state = Arc::new(tord::tor::BootstrapState::default());
+    {
+        let tor = tor.clone();
+        let bs = bootstrap_state.clone();
+        tokio::task::spawn_local(async move {
+            loop {
+                bs.store(&tor.bootstrap_status());
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        });
+    }
+
     let metrics = Arc::new(tord::metrics::Metrics::default());
+    let streams = Arc::new(tord::streams::StreamRegistry::default());
     let server = Arc::new(tord::socks::SocksServer::new(
         cfg.isolation,
         tor,
         metrics.clone(),
+        streams.clone(),
     ));
     let control_state = Arc::new(tord::control::ControlState {
         started: Instant::now(),
         socks_listen: cfg.socks_listen,
         metrics,
+        bootstrap: bootstrap_state,
+        streams,
     });
 
     // SIGHUP: live reconfigure. Re-binding listeners on a config

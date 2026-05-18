@@ -1,10 +1,11 @@
-//! Process-wide counters, surfaced over the control socket.
+//! Process-wide cumulative counters, surfaced over the control
+//! socket. The live per-connection view lives in `streams`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Serialize;
 
-/// Atomic counters incremented by the SOCKS server.
+/// Cumulative atomic counters maintained by the SOCKS server.
 #[derive(Default)]
 pub struct Metrics {
     pub connects_total: AtomicU64,

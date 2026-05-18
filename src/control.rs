@@ -3,13 +3,16 @@
 //!
 //! Protocol: the client writes one line — a bare command word — and
 //! reads one line of JSON back. Commands:
-//!   * `status`  — uptime, SOCKS listener address
-//!   * `stats`   — the metrics counters
+//!   * `status`  — uptime, SOCKS listener address, Tor bootstrap state
+//!   * `stats`   — the cumulative metrics counters
+//!   * `streams` — the live per-connection table
 //!   * `reload`  — raise SIGHUP on self (config re-read)
 //!   * `ping`    — liveness check
 //!
-//! `circuits` (per-circuit detail) is a follow-up — arti does not
-//! expose a circuit list through a stable public API yet.
+//! `streams` reports tord's own view of its connections. Tor
+//! circuit detail (relay hops, guards) is *not* available: arti
+//! does not expose a circuit-enumeration API through a stable
+//! public interface.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -22,6 +25,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::metrics::Metrics;
+use crate::streams::StreamRegistry;
+use crate::tor::BootstrapState;
 
 pub const DEFAULT_SOCKET: &str = "/run/tord.sock";
 
@@ -30,6 +35,8 @@ pub struct ControlState {
     pub started: Instant,
     pub socks_listen: SocketAddr,
     pub metrics: Arc<Metrics>,
+    pub bootstrap: Arc<BootstrapState>,
+    pub streams: Arc<StreamRegistry>,
 }
 
 #[derive(Serialize)]
@@ -77,12 +84,31 @@ async fn handle(stream: UnixStream, state: Arc<ControlState>) -> Result<()> {
 fn dispatch(cmd: &str, state: &ControlState) -> Reply {
     match cmd {
         "ping" => Reply::Ok(serde_json::json!({ "pong": true })),
-        "status" => Reply::Ok(serde_json::json!({
-            "uptime_secs": state.started.elapsed().as_secs(),
-            "socks_listen": state.socks_listen.to_string(),
-        })),
+        "status" => {
+            let bs = state.bootstrap.snapshot();
+            Reply::Ok(serde_json::json!({
+                "uptime_secs": state.started.elapsed().as_secs(),
+                "socks_listen": state.socks_listen.to_string(),
+                "tor": {
+                    "ready": bs.ready,
+                    "fraction": bs.fraction,
+                    "blocked": bs.blocked,
+                },
+            }))
+        }
         "stats" => match serde_json::to_value(state.metrics.snapshot()) {
-            Ok(v) => Reply::Ok(v),
+            Ok(mut v) => {
+                // `streams_active` is the live row count — derive it
+                // from the registry rather than keeping a gauge.
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert("streams_active".to_string(), state.streams.len().into());
+                }
+                Reply::Ok(v)
+            }
+            Err(e) => Reply::Error { message: e.to_string() },
+        },
+        "streams" => match serde_json::to_value(state.streams.snapshot()) {
+            Ok(v) => Reply::Ok(serde_json::json!({ "streams": v })),
             Err(e) => Reply::Error { message: e.to_string() },
         },
         "reload" => match nix::sys::signal::raise(nix::sys::signal::Signal::SIGHUP) {

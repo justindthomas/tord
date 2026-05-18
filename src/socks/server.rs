@@ -20,6 +20,8 @@ use tor_rtcompat::Runtime;
 
 use crate::config::Isolation;
 use crate::metrics::Metrics;
+use crate::socks::metered::Metered;
+use crate::streams::StreamRegistry;
 use crate::tor::TorManager;
 
 const SOCKS5: u8 = 0x05;
@@ -42,14 +44,21 @@ pub struct SocksServer<R: Runtime> {
     isolation: Isolation,
     tor: Arc<TorManager<R>>,
     metrics: Arc<Metrics>,
+    streams: Arc<StreamRegistry>,
 }
 
 impl<R: Runtime> SocksServer<R> {
-    pub fn new(isolation: Isolation, tor: Arc<TorManager<R>>, metrics: Arc<Metrics>) -> Self {
+    pub fn new(
+        isolation: Isolation,
+        tor: Arc<TorManager<R>>,
+        metrics: Arc<Metrics>,
+        streams: Arc<StreamRegistry>,
+    ) -> Self {
         Self {
             isolation,
             tor,
             metrics,
+            streams,
         }
     }
 
@@ -155,8 +164,13 @@ impl<R: Runtime> SocksServer<R> {
 
         // --- open the anonymised stream (fail closed) ---
         let _ = self.isolation; // see TODO(isolation) above
-        tracing::debug!(%peer, %host, port, isolation_user = ?iso_user, "SOCKS CONNECT");
+        let target = format!("{host}:{port}");
+        tracing::debug!(%peer, %target, isolation_user = ?iso_user, "SOCKS CONNECT");
         self.metrics.connects_total.fetch_add(1, Ordering::Relaxed);
+        // Register the connection so `tord query streams` can see it;
+        // the handle removes the row when this function returns,
+        // however it returns.
+        let stream = self.streams.register(peer, target, iso_user);
         let mut upstream = match self.tor.connect((host.as_str(), port)).await {
             Ok(s) => s,
             Err(e) => {
@@ -169,16 +183,14 @@ impl<R: Runtime> SocksServer<R> {
         self.metrics.connects_ok.fetch_add(1, Ordering::Relaxed);
 
         // --- splice client <-> Tor circuit ---
-        let (to_upstream, to_client) =
-            tokio::io::copy_bidirectional(&mut client, &mut upstream)
-                .await
-                .context("proxying SOCKS stream")?;
-        self.metrics
-            .bytes_to_upstream
-            .fetch_add(to_upstream, Ordering::Relaxed);
-        self.metrics
-            .bytes_to_client
-            .fetch_add(to_client, Ordering::Relaxed);
+        // `Metered` counts bytes as they flow — into the process
+        // totals and the per-connection row — so the counts are right
+        // even when the copy ends with an error (`copy_bidirectional`
+        // discards its return value in that case).
+        let mut client = Metered::new(client, self.metrics.clone(), stream.entry());
+        tokio::io::copy_bidirectional(&mut client, &mut upstream)
+            .await
+            .context("proxying SOCKS stream")?;
         Ok(())
     }
 }

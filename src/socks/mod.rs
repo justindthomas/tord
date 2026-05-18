@@ -4,6 +4,7 @@
 //! (under the `vcl` feature) so a consumer reaches it over the VPP
 //! session layer with no kernel sockets in the path.
 
+pub mod metered;
 pub mod server;
 
 pub use server::SocksServer;

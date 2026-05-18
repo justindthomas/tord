@@ -9,11 +9,14 @@
 //! Still TODO: circuit-isolation token mapping from the SOCKS
 //! username (DESIGN.md §8).
 
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use arti_client::config::CfgPath;
 use arti_client::{BootstrapBehavior, DataStream, IntoTorAddr, TorClient, TorClientConfig};
+use serde::Serialize;
 use tor_rtcompat::Runtime;
 
 use crate::config::TorConfig;
@@ -60,6 +63,62 @@ impl<R: Runtime> TorManager<R> {
             .connect(target)
             .await
             .context("opening anonymised Tor stream")
+    }
+
+    /// Snapshot arti's current bootstrap status. Cheap (a lock plus
+    /// a small clone) — safe to poll on a timer.
+    pub fn bootstrap_status(&self) -> BootstrapSnapshot {
+        let s = self.client.bootstrap_status();
+        BootstrapSnapshot {
+            ready: s.ready_for_traffic(),
+            fraction: s.as_frac(),
+            blocked: s.blocked().map(|b| b.message().to_string()),
+        }
+    }
+}
+
+/// Live Tor bootstrap state, shared (`Arc`) between the task that
+/// polls it and the control socket that reports it. Kept non-generic
+/// so `control::ControlState` need not carry the runtime type
+/// parameter.
+#[derive(Default)]
+pub struct BootstrapState {
+    ready: AtomicBool,
+    /// Bootstrap progress in per-mille (0..=1000).
+    frac_permille: AtomicU32,
+    blocked: Mutex<Option<String>>,
+}
+
+/// Serialisable view of `BootstrapState`, also returned directly by
+/// `TorManager::bootstrap_status`.
+#[derive(Serialize, Clone)]
+pub struct BootstrapSnapshot {
+    /// True once Tor can carry traffic.
+    pub ready: bool,
+    /// Bootstrap progress, 0.0..=1.0.
+    pub fraction: f32,
+    /// Human-readable reason bootstrap is stalled, if any.
+    pub blocked: Option<String>,
+}
+
+impl BootstrapState {
+    /// Overwrite the stored state with a fresh reading.
+    pub fn store(&self, snap: &BootstrapSnapshot) {
+        self.ready.store(snap.ready, Ordering::Relaxed);
+        self.frac_permille.store(
+            (snap.fraction.clamp(0.0, 1.0) * 1000.0) as u32,
+            Ordering::Relaxed,
+        );
+        *self.blocked.lock().unwrap() = snap.blocked.clone();
+    }
+
+    /// Read the stored state back out for reporting.
+    pub fn snapshot(&self) -> BootstrapSnapshot {
+        BootstrapSnapshot {
+            ready: self.ready.load(Ordering::Relaxed),
+            fraction: self.frac_permille.load(Ordering::Relaxed) as f32 / 1000.0,
+            blocked: self.blocked.lock().unwrap().clone(),
+        }
     }
 }
 
