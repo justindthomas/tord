@@ -117,7 +117,17 @@ impl<R: Runtime> SocksServer<R> {
     {
         tokio::task::spawn_local(async move {
             if let Err(e) = self.handle(client, peer).await {
-                tracing::warn!(%peer, error = %e, "SOCKS connection failed");
+                // A connection closing mid-proxy (the SOCKS client or
+                // the Tor upstream hanging up) surfaces here as an io
+                // error — routine churn, especially with a consumer
+                // that pools and recycles connections. Log it at
+                // debug; reserve warn for genuine failures (SOCKS
+                // negotiation errors, Tor CONNECT failures, ...).
+                if is_benign_disconnect(&e) {
+                    tracing::debug!(%peer, error = %e, "SOCKS connection closed");
+                } else {
+                    tracing::warn!(%peer, error = %e, "SOCKS connection failed");
+                }
             }
         });
     }
@@ -270,6 +280,25 @@ where
     let mut port = [0u8; 2];
     client.read_exact(&mut port).await?;
     Ok((host, u16::from_be_bytes(port)))
+}
+
+/// True when an error out of `handle` is just a connection that
+/// closed mid-stream — the SOCKS client or the Tor upstream hung up.
+/// Routine churn (a pooling consumer recycles connections), not a
+/// failure worth a warning. Walks the error chain for an io error
+/// of an end-of-connection kind.
+fn is_benign_disconnect(e: &anyhow::Error) -> bool {
+    e.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| {
+                use std::io::ErrorKind::*;
+                matches!(
+                    io.kind(),
+                    UnexpectedEof | BrokenPipe | ConnectionReset | ConnectionAborted
+                )
+            })
+    })
 }
 
 /// Send a SOCKS5 reply. The bound address is reported as `0.0.0.0:0`
